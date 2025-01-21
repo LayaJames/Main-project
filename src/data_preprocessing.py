@@ -3,6 +3,7 @@ import numpy as np
 import jax.numpy as jnp
 from transformers import BertTokenizer
 from sklearn.utils import resample
+import jax.numpy as jnp
 
 def preprocess_data(file_path, tokenizer, max_length=64):
     data = pd.read_csv(file_path)

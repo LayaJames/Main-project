@@ -1,27 +1,55 @@
-import torch
-from torch.utils.data import DataLoader, TensorDataset, SequentialSampler
+import jax
+import jax.numpy as jnp
+from flax.serialization import from_bytes
+from transformers import BertTokenizer
 from model import BERT_LSTM
-from data_preprocessing import preprocess_data
 
-# Load and preprocess data
-input_ids, attention_masks, labels = preprocess_data('data/data/payload_test.csv')
-dataset = TensorDataset(input_ids, attention_masks, labels)
-dataloader = DataLoader(dataset, sampler=SequentialSampler(dataset), batch_size=32)
+# Initialize model
+model = BERT_LSTM(lstm_hidden_dim=128, num_classes=2)
 
-# Load trained model
-model = BERT_LSTM()
-model.load_state_dict(torch.load('path_to_saved_model.pt'))
+# Load model checkpoint
+def load_model_checkpoint(model, model_path):
+    rng = jax.random.PRNGKey(0)
+    dummy_input_ids = jnp.ones((1, 6), dtype=jnp.int32)
+    dummy_attention_mask = jnp.ones((1, 6), dtype=jnp.int32)
 
-# Evaluation loop
-model.eval()
-correct = 0
-total = 0
-with torch.no_grad():
-    for batch in dataloader:
-        batch_input_ids, batch_attention_masks, batch_labels = batch
-        logits = model(batch_input_ids, batch_attention_masks)
-        _, predicted = torch.max(logits, 1)
-        total += batch_labels.size(0)
-        correct += (predicted == batch_labels).sum().item()
+    with open(model_path, "rb") as f:
+        trained_params = from_bytes(
+            model.init({"params": rng}, dummy_input_ids, dummy_attention_mask, rng)["params"],
+            f.read(),
+        )
 
-print(f'Accuracy: {100 * correct / total}%')
+    state = model.init({"params": rng}, dummy_input_ids, dummy_attention_mask, rng)
+    state = state.unfreeze()
+    state["params"] = trained_params
+
+    return state
+
+# Evaluate model
+def evaluate_model(state, test_data):
+    input_ids = test_data["input_ids"]
+    attention_mask = test_data["attention_mask"]
+    labels = test_data["labels"]
+
+    # Forward pass
+    rng = jax.random.PRNGKey(42)
+    logits = model.apply({"params": state["params"]}, input_ids, attention_mask, rng)
+    predictions = jnp.argmax(logits, axis=-1)
+
+    # Calculate accuracy
+    accuracy = jnp.mean(predictions == labels)
+    print(f"Model Accuracy: {accuracy * 100:.2f}%")
+
+# Example usage
+if __name__ == "__main__":
+    model_path = "outputs/bert_lstm_model.pkl"
+    tokenizer = BertTokenizer.from_pretrained("bert-base-uncased")
+
+    # Load and preprocess data
+    input_ids = jnp.array([[101, 2023, 2003, 1037, 3231, 102]], dtype=jnp.int32)
+    attention_masks = jnp.array([[1, 1, 1, 1, 1, 1]], dtype=jnp.int32)
+    labels = jnp.array([1], dtype=jnp.int32)
+    test_data = {"input_ids": input_ids, "attention_mask": attention_masks, "labels": labels}
+
+    state = load_model_checkpoint(model, model_path)
+    evaluate_model(state, test_data)
